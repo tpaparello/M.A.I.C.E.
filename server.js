@@ -54,9 +54,88 @@ async function initDB() {
 
 initDB();
 
-// Serve API key
-app.get('/config', (req, res) => {
-  res.json({ key: process.env.ANTHROPIC_API_KEY || '' });
+// ===== AI PROXY =========================================================
+// The browser never sees an API key. It sends the conversation here and the
+// server calls Anthropic. "tier" picks the model:
+//   roleplay -> Sonnet 5.5 (live customer conversations + their scoring)
+//   anything else -> Haiku 5.5 (quizzes, Playbook Q&A, question drafting)
+const MODELS = {
+  roleplay: process.env.ROLEPLAY_MODEL || 'claude-sonnet-5-5',
+  default:  process.env.DEFAULT_MODEL  || 'claude-haiku-5-5'
+};
+
+app.post('/api/claude', async (req, res) => {
+  try {
+    const { system, messages, max_tokens, tier } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'messages required' });
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set on the server' });
+    }
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: MODELS[tier] || MODELS.default,
+        max_tokens: Math.min(parseInt(max_tokens, 10) || 800, 4000),
+        system: system || '',
+        messages: messages
+      })
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      console.error('Claude API error:', r.status, data && data.error);
+      return res.status(r.status).json({ error: (data && data.error && data.error.message) || 'Claude API error' });
+    }
+    const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+    res.json({ text });
+  } catch (err) {
+    console.error('Claude proxy error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== TEXT-TO-SPEECH ===================================================
+// OpenAI gpt-4o-mini-tts. "instructions" steers delivery per customer
+// persona (impatient, nervous, skeptical...). Stateless: text in, mp3 out.
+const TTS_VOICES = ['alloy','ash','ballad','coral','echo','fable','nova','onyx','sage','shimmer','verse'];
+
+app.post('/api/tts', async (req, res) => {
+  try {
+    const { text, voice, instructions } = req.body || {};
+    if (!text || !String(text).trim()) return res.status(400).json({ error: 'text required' });
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OPENAI_API_KEY is not set' });
+    const r = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY
+      },
+      body: JSON.stringify({
+        model: process.env.TTS_MODEL || 'gpt-4o-mini-tts',
+        voice: TTS_VOICES.indexOf(voice) !== -1 ? voice : 'coral',
+        input: String(text).slice(0, 4000),
+        instructions: instructions ? String(instructions).slice(0, 1000) : undefined,
+        response_format: 'mp3'
+      })
+    });
+    if (!r.ok) {
+      const errText = await r.text();
+      console.error('TTS error:', r.status, errText);
+      return res.status(r.status).json({ error: 'TTS failed' });
+    }
+    res.set('Content-Type', 'audio/mpeg');
+    res.set('Cache-Control', 'no-store');
+    res.send(Buffer.from(await r.arrayBuffer()));
+  } catch (err) {
+    console.error('TTS proxy error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Save/update user progress
