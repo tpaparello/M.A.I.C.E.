@@ -93,7 +93,12 @@ app.post('/api/claude', async (req, res) => {
       return res.status(r.status).json({ error: (data && data.error && data.error.message) || 'Claude API error' });
     }
     const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-    res.json({ text });
+    if (!text) {
+      console.error('Claude API empty reply, stop_reason:', data.stop_reason);
+      return res.status(502).json({ error: 'AI returned no text (stop_reason: ' + data.stop_reason + ')' });
+    }
+    if (data.stop_reason === 'max_tokens') console.warn('Claude reply cut off at max_tokens');
+    res.json({ text, stop_reason: data.stop_reason });
   } catch (err) {
     console.error('Claude proxy error:', err.message);
     res.status(500).json({ error: err.message });
