@@ -878,17 +878,26 @@ function go(p){
 
 // All AI calls go through the server (/api/claude) so no API key ever
 // reaches the browser. tier "roleplay" = Sonnet 5.5, otherwise Haiku 5.5.
-function api(msgs,sys,tok,tier){
+function api(msgs,sys,tok,tier,_retried){
+  var retry=function(){
+    return new Promise(function(res){setTimeout(res,1500);}).then(function(){return api(msgs,sys,tok,tier,true);});
+  };
   return fetch("/api/claude",{
     method:"POST",
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({messages:msgs,system:sys,max_tokens:tok||800,tier:tier||"default"})
   }).then(function(r){
     return r.json().then(function(d){
-      if(!r.ok){toast("AI Error: "+(d&&d.error?d.error:r.status));return null;}
+      if(!r.ok){
+        if(!_retried&&(r.status===429||r.status>=500))return retry();
+        toast("AI Error: "+(d&&d.error?d.error:r.status));return null;
+      }
       return d&&d.text?d.text:null;
     });
-  }).catch(function(e){toast("Network error - check connection");return null;});
+  }).catch(function(e){
+    if(!_retried)return retry();
+    toast("Network error - check connection");return null;
+  });
 }
 
 var PB_PHASES={
@@ -1023,6 +1032,16 @@ var CERT_RP_CONFIG = {
   }
 };
 
+// DVI video overview (Phase 3). One-way narration, graded by rpGrade like
+// every other role-play so it gets JSON scoring, PASS_SCORE and a retry.
+var DVI_CFG = {
+  intro:"DVI video overview. The advisor is recording an inspection video narration for the customer, Mr. Smith. It is a one-way recording, not a conversation - the single ADVISOR line is the full narration.",
+  brief:"Mr. Smith came in for grinding brakes. REQUIRED: brake caliper seized, keeping the pad applied to the rotor; brake pads worn to metal (cause of the grinding); rotors damaged from metal-on-metal contact. RECOMMENDED: serpentine belt cracking; engine air filter due by mileage. Other systems (tires, exhaust, suspension) are fine.",
+  rubric:"Playbook DVI video standards: 1) Opened with a greeting, own name, Midas location, and the vehicle year/make/model. 2) Started with the customer concern (grinding brakes) and used the customer's name. 3) Show do not tell: described what is on camera with measurements or specifics. 4) Explained the consequence of each finding. 5) Presented in order: concern, required items, then recommended items. 6) Used required language for required items (this will require your immediate attention / required for replacement). 7) Celebrated what is good (tires, exhaust, suspension). 8) Ended with a clear recommendation and the closing script (please review your vehicle health report, thank you for choosing Midas).",
+  outOfScope:"pricing, scheduling, objection handling, or anything that needs a customer reply - this is a one-way video.",
+  pb:function(){return pbPhase(3);}
+};
+
 function buildCustomerPrompt(cfg){
   return "You are playing a CUSTOMER of a Midas auto repair shop. The person talking to you is a Midas service advisor. "
     +"You are ONLY the customer. Never speak as the advisor or any Midas employee, never say thank you for calling Midas, never coach, narrate, describe the scene, score or give feedback, and never mention training, role-play, AI or a Playbook. "
@@ -1102,7 +1121,7 @@ function rpFormatDebrief(g,isCert){
 
 // Grade into a chat bubble. On failure the bubble becomes a retry button.
 function rpGradeInto(el,cfg,history,isCert,hungUpEarly,onDone){
-  el.textContent="Scoring your call...";
+  el.textContent="Scoring...";
   rpGrade(cfg,history,hungUpEarly).then(function(g){
     if(!g){
       el.textContent="Scoring didn't come back. Click here to try again.";
@@ -1273,20 +1292,13 @@ function dviComplete(){
   var fullScript=dviLines.join(" ");
   var timeStr=m+":"+(s<10?"0":"")+s;
 
-  var transcript=document.getElementById("dvi-transcript");
   var scoring=document.createElement("div");
-  scoring.style.cssText="background:var(--dark2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:16px";
-  scoring.innerHTML="<div style='font-size:12px;color:var(--muted);margin-bottom:8px'>Scoring your DVI video...<span class='dots' style='margin-left:8px'><span></span><span></span><span></span></span></div>";
-  transcript.appendChild(scoring);
-
-  var sys="You are scoring a Midas service advisor DVI video overview exercise. The advisor filmed a video for Mr. Smith whose vehicle came in for grinding brakes. The technician found seized brake calipers (required), worn brake pads to metal (required), damaged rotors (required), and also recommended a serpentine belt due to cracking and an air filter due by mileage. The advisor recorded the following narration in "+timeStr+": "+fullScript+" Score them against the Playbook DVI video standards: 1. Started with customer concern (grinding brakes). 2. Used customer name (Mr. Smith). 3. Show do not tell - used measurements or specific descriptions. 4. Explained the consequence of each finding. 5. Classified findings correctly - required items first then recommended. 6. Used correct MAP language for required items: This will require your immediate attention. 7. Celebrated what is good if applicable. 8. Ended with a clear recommendation. Give an overall score out of 10. Format: SCORE: X/10\nRESULT: PASS or FAIL (8 or above is pass)\nFEEDBACK: 2 to 3 sentences\nWHAT THEY DID WELL: specific things\nWHAT TO IMPROVE: specific fixes with Playbook guidance\nIDEAL OPENING: how they should have started per the Playbook script. Playbook: "+PB;
-
-  api([{role:"user",content:"Score this DVI video narration."}],sys,800,"roleplay").then(function(reply){
-    scoring.innerHTML="<div style='font-size:13px;line-height:1.7;white-space:pre-wrap'>"+(reply||"Scoring error. Please try again.")+"</div>";
-    // Re-enable voice/text controls and reset
-    document.getElementById("rp-text-mode").style.display="flex";
-    document.getElementById("rp-voice-start").style.display="block";
-    document.getElementById("dvi-status").textContent="Complete — "+timeStr;
+  scoring.className="mb";
+  scoring.style.cssText="margin-top:16px;padding:16px";
+  document.getElementById("dvi-transcript").appendChild(scoring);
+  rpGradeInto(scoring,DVI_CFG,[{role:"user",content:fullScript}],false,false,function(){
+    var st=document.getElementById("dvi-status");
+    if(st) st.textContent="Complete - "+timeStr;
   });
 }
 
@@ -2972,23 +2984,17 @@ function certDviComplete(){
   document.getElementById("cdvi-status").textContent="Submitted — scoring...";
   document.getElementById("cdvi-interim").textContent="";
 
-  // Show scoring
-  var liveWrap=document.getElementById("cdvi-live-wrap");
   var scoring=document.createElement("div");
-  scoring.style.cssText="background:var(--dark2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:16px";
-  scoring.innerHTML="<div style='font-size:12px;color:var(--muted);margin-bottom:8px'>Scoring your DVI video...<span class='dots' style='margin-left:8px'><span></span><span></span><span></span></span></div>";
-  liveWrap.appendChild(scoring);
+  scoring.className="mb";
+  scoring.style.cssText="margin-top:16px;padding:16px";
+  document.getElementById("cdvi-live-wrap").appendChild(scoring);
 
-  var sys="You are scoring a Midas service advisor DVI video overview certification exercise. The advisor filmed a video for Mr. Smith whose vehicle came in for grinding brakes. The technician found seized brake calipers (required), worn brake pads worn to metal (required), damaged rotors (required), and also recommended a serpentine belt due to cracking and an air filter due by mileage. The advisor recorded this narration in "+timeStr+": "+certDviFullText.trim()+" Score them against the Playbook DVI video standards: 1. Started with customer concern (grinding brakes). 2. Used customer name (Mr. Smith). 3. Show do not tell - used measurements or specific descriptions. 4. Explained the consequence of each finding. 5. Classified findings correctly - required items first then recommended. 6. Used correct MAP language for required items saying this will require your immediate attention. 7. Celebrated what is good if applicable. 8. Ended with a clear recommendation. Give an overall score out of 10 where 8 or above is a PASS. Format exactly: SCORE: X/10\nRESULT: PASS or FAIL\nFEEDBACK: 2 to 3 sentences\nWHAT THEY DID WELL: specific things\nWHAT TO IMPROVE: specific fixes with Playbook guidance. Playbook: "+PB;
-
-  api([{role:"user",content:"Score this DVI video narration."}],sys,800,"roleplay").then(function(reply){
-    if(!reply){scoring.innerHTML="<p style='color:var(--muted)'>Scoring error. Please try again.</p>";return;}
-    scoring.innerHTML="<div style='font-size:13px;line-height:1.7;white-space:pre-wrap'>"+reply+"</div>";
-    document.getElementById("cdvi-status").textContent="Complete - "+timeStr;
-    var scoreMatch=reply.match(/SCORE:\s*(\d+)/);
-    cRPS=scoreMatch?parseInt(scoreMatch[1]):0;
-    cRPD=true;
-    checkCD();
+  var phaseAtSubmit=cPh;
+  rpGradeInto(scoring,DVI_CFG,[{role:"user",content:certDviFullText.trim()}],true,false,function(g){
+    var st=document.getElementById("cdvi-status");
+    if(st) st.textContent="Complete - "+timeStr;
+    if(cPh!==phaseAtSubmit) return;
+    cRPS=g.score;cRPD=true;checkCD();
   });
 }
 
