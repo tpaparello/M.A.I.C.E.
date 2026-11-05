@@ -65,11 +65,26 @@ initDB();
 // The browser never sees an API key. It sends the conversation here and the
 // server calls Anthropic. "tier" picks the model:
 //   roleplay -> Sonnet 5.5 (live customer conversations + their scoring)
+//   grade    -> Sonnet 5.5 at temperature 0 (pass/fail role-play grading,
+//               so the same transcript gets the same verdict)
 //   anything else -> Haiku 5.5 (quizzes, Playbook Q&A, question drafting)
 const MODELS = {
   roleplay: process.env.ROLEPLAY_MODEL || 'claude-sonnet-5-5',
+  grade:    process.env.GRADE_MODEL    || process.env.ROLEPLAY_MODEL || 'claude-sonnet-5-5',
   default:  process.env.DEFAULT_MODEL  || 'claude-haiku-5-5'
 };
+
+function callAnthropic(body) {
+  return fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify(body)
+  }).then(async r => ({ r, data: await r.json() }));
+}
 
 app.post('/api/claude', async (req, res) => {
   try {
@@ -80,21 +95,21 @@ app.post('/api/claude', async (req, res) => {
     if (!process.env.ANTHROPIC_API_KEY) {
       return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set on the server' });
     }
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: MODELS[tier] || MODELS.default,
-        max_tokens: Math.min(parseInt(max_tokens, 10) || 800, 4000),
-        system: system || '',
-        messages: messages
-      })
-    });
-    const data = await r.json();
+    const body = {
+      model: MODELS[tier] || MODELS.default,
+      max_tokens: Math.min(parseInt(max_tokens, 10) || 800, 4000),
+      system: system || '',
+      messages: messages
+    };
+    if (tier === 'grade') body.temperature = 0;
+    let { r, data } = await callAnthropic(body);
+    // If a model ever rejects the temperature setting, grade without it
+    // rather than failing the advisor's role-play.
+    if (!r.ok && body.temperature !== undefined && r.status === 400 &&
+        /temperature/i.test(JSON.stringify(data && data.error || ''))) {
+      delete body.temperature;
+      ({ r, data } = await callAnthropic(body));
+    }
     if (!r.ok) {
       console.error('Claude API error:', r.status, data && data.error);
       return res.status(r.status).json({ error: (data && data.error && data.error.message) || 'Claude API error' });
