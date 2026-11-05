@@ -603,7 +603,7 @@ var SCENES = {
   "close-ph":{l:"Close: Phone"},
   "followup":{l:"Follow-Up Call"}
 };
-// Customer behavior, opening lines and scoring rubrics for each scenario
+// Customer behavior, opening lines and pass/fail grading sections for each scenario
 // live in RP_CONFIG (role-play engine, further down).
 
 var OBJS = [
@@ -957,25 +957,72 @@ function pbPhase(n){
 //  - The CUSTOMER call only plays the customer. No Playbook, no scoring.
 //    It ends its last line with END_MARK when the call is naturally over.
 //  - A separate GRADER call scores the finished transcript against the
-//    scenario rubric and returns JSON. Pass/fail is decided here in code.
+//    scenario's pass/fail sections and returns JSON. Pass/fail is decided
+//    here in code: every section must be met.
 // To change a scenario, edit its entry in RP_CONFIG / CERT_RP_CONFIG only.
-var PASS_SCORE = 8;
+// Every role-play is a checklist of pass/fail SECTIONS. A section passes only
+// if every requirement in it is met (no partial credit). The role-play passes
+// only if every section passes. score (0-10) is kept for storage/display:
+// 10 = all sections passed; otherwise it is capped at 9 so it can never pass.
+var PASS_SCORE = 10;
 var END_MARK = "[[END_CALL]]";
 var rpEnded = false;
 
 var OUT_OF_SCOPE_P1 = "collecting an email address, verifying a VIN or physical address, getting a signature or authorization, or setting expectations about the vehicle health report - all of these belong to Phase 2 check-in.";
 
-var RUBRIC_P1 = "Phase 1 Initial Contact phone call. Goal: sell the no-cost inspection and book the appointment. Criteria: 1) Greeting: thanked them for calling Midas, gave the location and their own name, asked how they can help, positive tone with no negative words. 2) Asked for the customer's name and callback number in case of disconnect. 3) Probing questions: the customer opens by asking for a price on brakes, so the key probing question is asking what type of concern they are having with the vehicle (have you been here before also counts). Deduct heavily if the advisor quotes a price or books the appointment without first asking about the concern. 4) Recommend Now: recommended a no-cost / complimentary assessment, explained they can find the exact issue and give a price to the penny, about 20 minutes. 5) Current promo: mentioned a promotion or offered to look for available promotions. 6) Scheduled the appointment with a specific time and put them in the book. Giving a price is a last resort only after the customer insists; using the Playbook back-against-the-wall price script at that point is acceptable.";
+var GREETING_REQ = "The advisor's FIRST line contains all four: (a) a thank-you with the name Midas - \"Thank you for choosing Midas\" (\"Thank you for calling Midas\" also counts), (b) the store location, (c) the advisor's own name, (d) \"How may I help you?\" or \"How can I help you?\".";
+var SCHEDULE_REQ = "The advisor did ALL FIVE: (a) got the customer's name, (b) got the customer's phone number, (c) booked a specific clock time (for example 3:00 - \"this afternoon\", \"later\" or \"whenever\" does not count), (d) repeated the appointment time back to the customer to confirm it, (e) thanked the customer.";
+var PROMO_REQ = "The advisor offered to look up applicable in-store promotions for the customer (Playbook line: \"While the vehicle is here I'll look up any applicable in-store promotions for you\") or named a specific current promotion. A coupon price already used for Recommend Now does not also count here.";
+
+// Phase 1 - Initial Contact / Phone. Concern call (brakes).
+var SECTIONS_P1 = [
+  {name:"Greeting", req:GREETING_REQ},
+  {name:"Probing Question", req:"Before recommending, quoting a price or booking, the advisor asked what type of concern the customer is having with the vehicle (\"What type of concern are you having with the vehicle?\" or a direct question about what is going on with it). \"Have you been here before?\" on its own does NOT pass on a concern call."},
+  {name:"Recommend Now", req:"The advisor said ALL FOUR: (a) recommended bringing the vehicle in for a no-cost / free / complimentary evaluation, (b) that it takes about 20 minutes, (c) that they can provide an estimate from there, (d) asked if the customer is available now (\"Are you available now?\"). Playbook line: \"Anytime I have a customer with that type of concern I recommend you bring your vehicle in for a no cost evaluation. It takes 20 minutes and we can provide an estimate from there. Are you available now?\" Quoting a brake price instead does NOT pass."},
+  {name:"Current Promo", req:PROMO_REQ},
+  {name:"Schedule the Appointment", req:SCHEDULE_REQ}
+];
+
+// Phase 1 - oil change call. Same five sections with the oil-change allowances.
+var SECTIONS_P1_OIL = [
+  {name:"Greeting", req:GREETING_REQ},
+  {name:"Probing Question", req:"Before quoting a price or booking, the advisor asked \"Have you been here before?\" or asked what type of concern the customer is having with the vehicle. Either one passes on an oil change call."},
+  {name:"Recommend Now", req:"The advisor EITHER quoted the oil change price with the coupon (synthetic $89.99 with a $40 coupon, regular $49.99 with a $20 coupon) OR recommended bringing the vehicle in for a no-cost evaluation - AND in both cases asked if the customer is available now (\"Are you available now?\")."},
+  {name:"Current Promo", req:PROMO_REQ},
+  {name:"Schedule the Appointment", req:SCHEDULE_REQ}
+];
 
 var CUSTOMER_P1 = "Your name is Jordan Miller and your number is 555-0142 (give these only when asked). You drive a 2017 Honda Accord and you have never been to this Midas. Your brakes have been making a grinding noise when you stop and you are a little nervous about it. When the advisor answers, ONLY ask for a price on brakes - say something like: Hi, yeah, I'm looking for a price on brakes. Do NOT mention the grinding noise or any symptoms in your opening line. Only describe the grinding noise (and that it happens when you stop) once the advisor asks what type of concern you are having or what is going on with the vehicle. If they just quote a price or try to book you without asking about the concern, stay vague and keep asking how much brakes cost. If they ask about the concern and then recommend a free inspection that only takes about 20 minutes and make it easy, agree to come in this afternoon.";
 
-var FINDINGS_PRACTICE = "ADVISOR CONTEXT - READ BEFORE YOU START:\n\nCustomer: Mr. Lee - 2018 Nissan Altima, came in for squeaking brakes.\n\nREQUIRED:\n- Front brake pads: worn to 2mm (new = 12mm) - immediate replacement\n- Front rotors: scored from pad wear - immediate replacement\n\nOK (GREEN):\n- Battery: tested healthy at 640 CCA\n- Tires: 7/32 tread, wearing evenly\n\nRECOMMENDED:\n- Engine air filter: dirty, due for replacement\n\nTOTAL: $649.00 including tax - ready by 4:00 PM today.\n\nFollow all 5 steps of the close. Expect pushback on price and use the Sales Triangle.";
+var FINDINGS_PRACTICE = "ADVISOR CONTEXT - READ BEFORE YOU START:\n\nCustomer: Mr. Lee - 2018 Nissan Altima, came in for squeaking brakes.\n\nREQUIRED:\n- Front brake pads: worn to 2mm (new = 12mm) - immediate replacement\n- Front rotors: scored from pad wear - immediate replacement\n\nOK (GREEN):\n- Battery: tested healthy at 640 CCA\n- Tires: 7/32 tread, wearing evenly\n\nRECOMMENDED:\n- Engine air filter: dirty, due for replacement\n\nTOTAL: $649.00 including tax - ready by 4:00 PM today.\n\nFollow all 5 presentation steps: confirm the concern (and that they watched the video), review the DVI in order (concern, required, OK, recommended), feature and benefit, price and time frame, then assume the sale with an either/or closing question.\n\nExpect pushback. Overcome it in 5 steps: Identify, Isolate, Empathize, Overcome, Reclose.";
 
-var CUSTOMER_PRACTICE_CLOSE = "Your name is Alex Lee. You brought your 2018 Nissan Altima in this morning for squeaking brakes and watched the inspection video. The advisor will go over: front brake pads at 2mm and scored rotors (required), battery and tires are fine, engine air filter recommended, total $649 ready by 4 PM. When you hear the total, hesitate - it is more than you expected. If asked what is holding you back, say it is the money, you just paid rent. If they ask whether money is the only thing, say yes. If they then offer flexible or no-interest payment options and ask to get started, agree to all of it. If they never ask what is holding you back, say you will have to think about it. If they cut items or discount without asking, say you will just do the brakes for now.";
+var CUSTOMER_PRACTICE_CLOSE = "Your name is Alex Lee. You brought your 2018 Nissan Altima in this morning for squeaking brakes and watched the inspection video. The advisor will go over: front brake pads at 2mm and scored rotors (required), battery and tires are fine, engine air filter recommended, total $649 ready by 4 PM. When you hear the total, hesitate - it is more than you expected. If asked what is holding you back, say it is the money, you just paid rent. If they ask whether money is the only thing, say yes. If they then offer flexible or no-interest payment options and ask their closing question again, agree to all of it. If they never ask what is holding you back, say you will have to think about it. If they cut items or discount without asking, say you will just do the brakes for now.";
 
-var RUBRIC_CLOSE_BASE = "The inspection is done and quoting the price is expected. Criteria: 2) Confirmed the initial concern (squeaking brakes) and tied the solution back to it. 3) Reviewed findings in order: concern, required items (front pads at 2mm and rotors - this will require your immediate attention), OK items (battery, tires), then recommended (air filter). 4) Presented the total ($649) and completion time (4:00 PM). 5) Assumed the sale with a closing statement. 6) Sales Triangle on pushback: Identify (asked what is holding them back), Isolate (confirmed money is the only thing), Overcome (flexible / no-interest payment options and assumed the close again).";
+// Phase 5 - Presentation and Close + Overcoming the Objection. o = the
+// scenario's specifics so each requirement names exactly what to listen for.
+var CLOSE_EXAMPLES = "\"Did you need a ride home or will you be waiting here?\" or \"Would you prefer a text or a call when it's done?\"";
+function sectionsP5(o){
+  return [
+    {name:"Presentation 1 - Confirm Initial Concern", req:"The advisor restated the customer's original concern ("+o.concern+") AND confirmed the customer has viewed the video overview / inspection report (asked or confirmed it was watched)."},
+    {name:"Presentation 2 - Review DVI in Order", req:"The advisor went through the inspection in this exact order: the concern first, then the REQUIRED items ("+o.required+"), then the OK items ("+o.ok+"), then the RECOMMENDED items ("+o.recommended+"). All four groups must be covered, and in that order. Skipping the OK items fails."},
+    {name:"Presentation 3 - Feature & Benefit", req:"For the concern and EACH required item, the advisor said what the repair does (feature) AND how it helps the customer (benefit - e.g. safer stopping, no more grinding, protects the new parts). Naming the part and the price alone does not pass."},
+    {name:"Presentation 4 - Price & Time Frame", req:"The advisor stated the total price ("+o.total+") AND when the vehicle will be done ("+o.time+"). Both are required."},
+    {name:"Presentation 5 - Assume the Sale", req:"After giving the price, the advisor asked a closing question where EITHER answer means the customer is doing business, e.g. "+CLOSE_EXAMPLES+". A yes/no question such as \"Do you want to go ahead?\" or \"Would you like to do the work?\" does NOT pass."},
+    {name:"Objection 1 - Identify", req:"After the customer pushed back, the advisor asked what is holding them back (\"What's holding you back?\" or the same question in other words)."},
+    {name:"Objection 2 - Isolate", req:"After identifying the objection, the advisor asked whether that is the ONLY thing holding them back (\"Is that the only thing holding you back?\")."},
+    {name:"Objection 3 - Empathize", req:"The advisor said out loud that they understand how the customer feels (e.g. \"I totally understand, I know how I would feel in that situation\"). A bare \"okay\" or \"got it\" does NOT pass."},
+    {name:"Objection 4 - Overcome", req:"After isolating, the advisor presented a specific solution to the stated objection (financing / payment options, a ride or Uber, the value of keeping the vehicle, etc.) framed as what other customers do (\"What most of my customers are doing now is...\"). Discounting or removing items without presenting a solution does NOT pass."},
+    {name:"Objection 5 - Reclose", req:"After overcoming, the advisor asked the either/or closing question again (e.g. \"Now that we have this taken care of, were you going to need that ride home, or will you be waiting here?\"). A yes/no question does NOT pass."}
+  ];
+}
+var SECTIONS_P5_PRACTICE = sectionsP5({concern:"squeaking brakes", required:"front brake pads at 2mm and scored front rotors", ok:"battery and tires", recommended:"engine air filter", total:"$649", time:"4:00 PM today"});
+var SECTIONS_P5_CERT = sectionsP5({concern:"grinding brakes", required:"seized front calipers, front pads at 2mm, scored and warped front rotors", ok:"tires and battery", recommended:"brake fluid exchange, engine air filter, wiper blades, serpentine belt", total:"$1,595", time:"end of day today"});
 
-var RUBRIC_P8 = "48-hour thank-you follow-up call. Only two things matter: 1) Introduced themselves with Midas and sincerely thanked the customer for their business. 2) Confirmed everything is going smoothly with the vehicle / that Midas did an exceptional job. If both are done warmly and naturally the score is 9 or 10. Deduct if they skip either one or turn the call into a sales pitch.";
+// Phase 8 - 48-hour follow-up call.
+var SECTIONS_P8 = [
+  {name:"Thank the Customer", req:"The advisor gave their own name, said they are with Midas, AND thanked the customer for their business."},
+  {name:"Confirm Everything Is Going Smoothly", req:"The advisor asked or confirmed that everything is going smoothly with the vehicle / that Midas did an exceptional job."}
+];
 
 var CUSTOMER_P8 = "Your name is Pat Reynolds. You had an oil change and tire rotation at this Midas two days ago and the car has been running great. You were not expecting a call. If the advisor sincerely thanks you and asks how everything is going, be warm and appreciative. If they skip the thank-you or start selling you something, get a little short with them.";
 
@@ -985,19 +1032,25 @@ var RP_CONFIG = {
   "phone-oil":{
     intro:"Incoming call. Pick up and greet the customer.",
     customer:"Your name is Dana Lopez and your number is 555-0187 (give these only when asked). You drive a 2019 Toyota RAV4 and you have been to this Midas once, last year. You are on your lunch break and a little rushed. When the advisor answers, say something like: Hi, I was wondering if I could get an oil change today? You are not sure whether you need synthetic or regular, and you want to know the price. You could come in around 3 if they offer a time.",
-    rubric:"Phase 1 phone call for an oil change. Goal: book the appointment. Criteria: 1) Greeting: thanked them for calling Midas, gave the location and their own name, asked how they can help, positive tone. 2) Asked for the customer's name and number in case they get disconnected. 3) Probing question: have you been here before. 4) Gave oil change pricing with the coupon (synthetic $89.99 with a $40 coupon, regular $49.99 with a $20 coupon) or mentioned a current promotion. 5) Moved to schedule: asked if they are available now or offered a time, and put them in the book.",
+    sections:SECTIONS_P1_OIL,
     outOfScope:OUT_OF_SCOPE_P1,
     pb:function(){return getPBForScene("phone-oil");}
   },
   "phone-concern":{
     intro:"Incoming call. Pick up and greet the customer.",
-    customer:CUSTOMER_P1, rubric:RUBRIC_P1, outOfScope:OUT_OF_SCOPE_P1,
+    customer:CUSTOMER_P1, sections:SECTIONS_P1, outOfScope:OUT_OF_SCOPE_P1,
     pb:function(){return getPBForScene("phone-concern");}
   },
   "walkin":{
     intro:"A customer walks up to your counter looking a little unsure. Greet them.",
     customer:"Your name is Sam Patel and your number is 555-0110. You drive a 2016 Ford Escape and you have never been to this Midas. You walked in without an appointment because your check engine light came on this morning and you are worried it is something expensive. You can wait while they look at it if they make it easy.",
-    rubric:"Walk-in customer at the counter. Criteria: 1) Warm greeting (good morning / good afternoon, how may I help you today) with a positive tone. 2) Probing: found out what the concern is. 3) Asked for first and last name to get them checked in, and a contact number. 4) Explained the technician will do a complimentary evaluation (about 20 minutes) and that anything found will be brought to their attention. 5) Customer-first language and acknowledged their worry.",
+    sections:[
+      {name:"Greeting", req:"Greeted the customer (good morning / good afternoon) AND asked how they can help."},
+      {name:"Probing", req:"Asked what the concern is with the vehicle before explaining next steps."},
+      {name:"Name and Number", req:"Asked for the customer's first and last name AND a contact number."},
+      {name:"Set Expectations", req:"Said the technician will do a complimentary / no-cost evaluation, that it takes about 20 minutes, AND that anything found will be brought to the customer's attention."},
+      {name:"Acknowledge the Worry", req:"Said out loud that they understand the customer's worry about the check engine light (an empathy statement)."}
+    ],
     outOfScope:"verifying a VIN or address, collecting an email, or getting a signature - a walk-in only needs to be greeted and started on check-in.",
     pb:function(){return getPBForScene("walkin")+"\n\n"+pbPhase(2);}
   },
@@ -1005,7 +1058,13 @@ var RP_CONFIG = {
     intro:"A customer with an appointment walks up to your counter.",
     opener:"Hi, I have a 2 o'clock appointment for an oil change. Name's Bob Johnson.",
     customer:"Your name is Bob Johnson. Your number is 555-0123 and it is a cell phone. Your email is bob.johnson@email.com. You drive a 2020 Chevy Malibu. You are here for an oil change, but if the advisor asks whether there is anything else going on, mention the car pulls a little to the right on the highway. You are a bit frustrated because the last shop you went to charged you for work you never approved - mention it only if the advisor builds a little rapport or asks how things have been.",
-    rubric:"Phase 2 check-in for an appointment customer. Criteria: 1) Verified the concern / reason for the visit and asked about any other concerns. 2) Collected contact info: first and last name, best contact number and whether it is a cell phone, email address, and verified address and VIN (or said they would). 3) Set expectations: complimentary vehicle health report ready in about 20 minutes, shared by text, reviewed together. 4) Authorization: asked for a signature and explained it is just permission to evaluate the vehicle. 5) Built rapport: interested not interesting, acknowledged emotions, we will not do anything that costs you money without your permission.",
+    sections:[
+      {name:"Verify Concerns", req:"Confirmed the reason for the visit AND asked if there are any other concerns with the vehicle."},
+      {name:"Collect Info", req:"Asked for ALL of: first and last name, best contact number, whether that number is a cell phone, email address, AND verified (or said they would verify) the address and VIN."},
+      {name:"Set Expectations", req:"Said ALL of: complimentary vehicle health report, ready in about 20 minutes, shared by text, and reviewed together."},
+      {name:"Authorization", req:"Asked for the customer's signature AND explained it is just permission to evaluate the vehicle."},
+      {name:"Build Rapport", req:"Acknowledged the customer's feelings with an empathy statement OR told them nothing will be done that costs them money without their permission."}
+    ],
     outOfScope:"phone greeting scripts, pricing, or presenting an estimate.",
     pb:function(){return getPBForScene("checkin");}
   },
@@ -1014,7 +1073,7 @@ var RP_CONFIG = {
     brief:FINDINGS_PRACTICE,
     opener:"So what are we looking at here? What do I need?",
     customer:CUSTOMER_PRACTICE_CLOSE+" You are standing at the counter in person. If they offer to show you the car on the lift, say sure.",
-    rubric:"Phase 5 in-person presentation and close. Criteria: 1) Offered to show the vehicle on the lift or walked the customer through it. "+RUBRIC_CLOSE_BASE+" The in-person closing statement is: Can we get you a ride home or will you be waiting here while we complete the repairs?",
+    sections:SECTIONS_P5_PRACTICE,
     outOfScope:"quoting the price (that is expected here), check-in steps, or follow-up steps.",
     pb:function(){return getPBForScene("close-ip");}
   },
@@ -1023,14 +1082,14 @@ var RP_CONFIG = {
     brief:FINDINGS_PRACTICE,
     opener:"Hello?",
     customer:CUSTOMER_PRACTICE_CLOSE+" You are at work and got the report by text. When the advisor asks if you saw the report, say something like: Yeah, I got the report you sent. So what's the damage?",
-    rubric:"Phase 5 phone presentation and close. Criteria: 1) Introduced themselves with their name and Midas location and confirmed the customer saw the inspection. "+RUBRIC_CLOSE_BASE+" The phone closing statement is: Would you prefer a text or a call when the services are completed?",
+    sections:SECTIONS_P5_PRACTICE,
     outOfScope:"quoting the price (that is expected here), check-in steps, or follow-up steps.",
     pb:function(){return getPBForScene("close-ph");}
   },
   "followup":{
     intro:"You are making a 48-hour thank-you call. The customer picks up.",
     opener:"Hello?",
-    customer:CUSTOMER_P8, rubric:RUBRIC_P8,
+    customer:CUSTOMER_P8, sections:SECTIONS_P8,
     outOfScope:"scheduling an appointment, collecting contact info, or offering services.",
     pb:function(){return getPBForScene("followup");}
   }
@@ -1041,15 +1100,15 @@ var RP_CONFIG = {
 var CERT_RP_CONFIG = {
   0:{
     intro:"Incoming call. Pick up and greet the customer.",
-    customer:CUSTOMER_P1, rubric:RUBRIC_P1, outOfScope:OUT_OF_SCOPE_P1,
+    customer:CUSTOMER_P1, sections:SECTIONS_P1, outOfScope:OUT_OF_SCOPE_P1,
     pb:function(){return pbPhase(1);}
   },
   4:{
     intro:"You are calling the customer to present the inspection and close. They pick up.",
-    brief:"ADVISOR CONTEXT - READ BEFORE THE CALL:\n\nA customer, Mr. Smith, brought their vehicle in for a grinding brake noise. The technician completed a full Digital Vehicle Inspection:\n\nREQUIRED:\n- Front brake calipers: seized, causing constant brake drag - immediate replacement required\n- Front brake pads: worn to 2mm (new = 12mm) - immediate replacement required\n- Front brake rotors: scored and warped - immediate replacement required\n\nRECOMMENDED:\n- Brake fluid exchange: contaminated, protects new components\n- Engine air filter: dirty, due for replacement\n- Wiper blades: cracked and streaking\n- Serpentine belt: showing wear\n\nPRICING: Total for all services: $1,595.00 including tax\n\nYOUR JOB - FOLLOW ALL 5 STEPS:\nStep 1: Confirm they received the DVI and confirm the brake concern\nStep 2: Present findings in order - concern, required, OK, recommended\nStep 3: Present the total of $1,595 and end of day completion\nStep 4: Assume the sale - would they prefer a text or call when it is done\nStep 5: The customer WILL push back on price. Use the Sales Triangle:\n  IDENTIFY: Ask what is holding them back\n  ISOLATE: Confirm money is the only reason\n  OVERCOME: Offer flexible payment options and assume the close again",
+    brief:"ADVISOR CONTEXT - READ BEFORE THE CALL:\n\nA customer, Mr. Smith, brought their vehicle in for a grinding brake noise and has been sent the DVI video overview. The technician completed a full Digital Vehicle Inspection:\n\nREQUIRED:\n- Front brake calipers: seized, causing constant brake drag - immediate replacement required\n- Front brake pads: worn to 2mm (new = 12mm) - immediate replacement required\n- Front brake rotors: scored and warped - immediate replacement required\n\nOK (GREEN):\n- Tires: 7/32 tread, wearing evenly\n- Battery: tested good at 650 CCA\n\nRECOMMENDED:\n- Brake fluid exchange: contaminated, protects new components\n- Engine air filter: dirty, due for replacement\n- Wiper blades: cracked and streaking\n- Serpentine belt: showing wear\n\nPRICING: Total for all services: $1,595.00 including tax - done by end of day today\n\nPRESENTATION - ALL 5 STEPS:\nStep 1: Confirm the initial concern (and that they watched the video overview)\nStep 2: Review the DVI in order - concern, required, OK, recommended\nStep 3: Feature & benefit of the concern and required items\nStep 4: Present the price ($1,595) and time frame (end of day)\nStep 5: Assume the sale with an either/or closing question\n\nOVERCOMING THE OBJECTION - the customer WILL push back on price:\nIdentify: What's holding you back?\nIsolate: Is that the only thing holding you back?\nEmpathize: I totally understand, I know how I would feel in that situation.\nOvercome: What most of my customers are doing now is... (financing, ride, vehicle value)\nReclose: Ask your closing question again.\n\nEvery step is pass/fail and every step must pass.",
     opener:"Hello?",
-    customer:"Your name is Chris Smith. You brought your car in for grinding brakes, got the inspection report by text and watched the video. The technician found front brake calipers seized, front pads worn to 2mm, and front rotors scored and warped - all required - plus a brake fluid exchange, engine air filter, wiper blades and serpentine belt recommended. The total is $1,595 including tax. When the advisor asks if you saw the report, say yes. When you hear $1,595, push back - it seems like a lot. If asked what is holding you back, say it is the money. If they ask whether money is the only thing, say yes. If they then offer flexible payment options with no-interest options and ask to get started (for example, asking you to confirm the spelling of your last name), warm up and agree to all of the work - your last name is spelled S-M-I-T-H. If they jump straight to cutting items or discounting without asking what is holding you back, say you will just do the brakes for now. If they never address your hesitation, say you need to think about it.",
-    rubric:"Phase 5 Presentation and Close by phone. The inspection is done and quoting the price is expected. Criteria: 1) Introduced themselves with their name and Midas location and confirmed the customer reviewed the inspection. 2) Confirmed the initial concern (grinding brakes) and tied the solution back to it. 3) Presented findings in order: concern, required items (calipers, pads, rotors - this will require your immediate attention), then recommended items. 4) Presented the total ($1,595) and the completion time frame. 5) Assumed the sale with the closing statement (would you prefer a text or a call when the services are completed). 6) Identify: asked what is holding them back. 7) Isolate: confirmed money is the only thing holding them back. 8) Overcome: offered flexible / no-interest payment options and assumed the close again.",
+    customer:"Your name is Chris Smith. You brought your car in for grinding brakes, got the inspection report by text and watched the video. The technician found front brake calipers seized, front pads worn to 2mm, and front rotors scored and warped - all required - your tires and battery are fine, plus a brake fluid exchange, engine air filter, wiper blades and serpentine belt recommended. The total is $1,595 including tax. When the advisor asks if you saw the report, say yes. When you hear $1,595, push back - it seems like a lot. If asked what is holding you back, say it is the money. If they ask whether money is the only thing, say yes. If they then offer flexible payment options with no-interest options and ask their closing question again, warm up and agree to all of the work. If they jump straight to cutting items or discounting without asking what is holding you back, say you will just do the brakes for now. If they never address your hesitation, say you need to think about it.",
+    sections:SECTIONS_P5_CERT,
     outOfScope:"quoting the price (that is expected here), check-in steps, scheduling a future appointment, or check-out steps.",
     pb:function(){return pbPhase(5);}
   },
@@ -1057,19 +1116,27 @@ var CERT_RP_CONFIG = {
     intro:"You are making the 48-hour thank-you call. The customer picks up.",
     brief:"ADVISOR CONTEXT - READ BEFORE THE CALL:\n\nYou are making a 48-hour thank-you follow-up call.\n\nThe customer had an oil change and tire rotation completed 2 days ago at your location. Everything went smoothly.\n\nTHIS CALL HAS EXACTLY TWO PURPOSES:\n1. Thank the customer sincerely for their business\n2. Confirm everything is going smoothly with their vehicle\n\nTHAT IS IT. Do NOT:\n- Ask for contact information (you are already calling them)\n- Schedule a 6-month appointment (that was handled at checkout in Phase 7)\n- Try to sell additional services\n- Make it longer than it needs to be\n\nPLAYBOOK SCRIPT:\nGood Morning [Customer Name], this is [Your Name] with Midas. I am calling today for two reasons. The first is to thank you for your business, it really means a lot. The second is to make sure we did an exceptional job for you and that everything is going smoothly.",
     opener:"Hello?",
-    customer:CUSTOMER_P8, rubric:RUBRIC_P8,
+    customer:CUSTOMER_P8, sections:SECTIONS_P8,
     outOfScope:"scheduling an appointment, collecting contact info, or offering services.",
     pb:function(){return pbPhase(8);}
   }
 };
 
 // DVI video overview (Phase 3). One-way narration, graded by rpGrade like
-// every other role-play so it gets JSON scoring, PASS_SCORE and a retry.
+// every other role-play (pass/fail sections + retry).
 var DVI_CFG = {
-  intro:"DVI video overview. The advisor is recording an inspection video narration for the customer, Mr. Smith. It is a one-way recording, not a conversation - the single ADVISOR line is the full narration.",
-  brief:"Mr. Smith came in for grinding brakes. REQUIRED: brake caliper seized, keeping the pad applied to the rotor; brake pads worn to metal (cause of the grinding); rotors damaged from metal-on-metal contact. RECOMMENDED: serpentine belt cracking; engine air filter due by mileage. Other systems (tires, exhaust, suspension) are fine.",
-  rubric:"Playbook DVI video standards: 1) Opened with a greeting, own name, Midas location, and the vehicle year/make/model. 2) Started with the customer concern (grinding brakes) and used the customer's name. 3) Show do not tell: described what is on camera with measurements or specifics. 4) Explained the consequence of each finding. 5) Presented in order: concern, required items, then recommended items. 6) Used required language for required items (this will require your immediate attention / required for replacement). 7) Celebrated what is good (tires, exhaust, suspension). 8) Ended with a clear recommendation and the closing script (please review your vehicle health report, thank you for choosing Midas).",
-  outOfScope:"pricing, scheduling, objection handling, or anything that needs a customer reply - this is a one-way video.",
+  intro:"DVI video overview. The advisor is recording an inspection video narration for the customer, Mr. Smith (2019 Honda CR-V). It is a one-way recording, not a conversation - the single ADVISOR line is the full narration.",
+  brief:"Customer: Mr. Smith. Vehicle: 2019 Honda CR-V. Came in for grinding brakes. REQUIRED: front brake calipers seized, keeping the pads pressed against the rotors; front brake pads worn to 0mm - metal on metal (new = 12mm), the cause of the grinding; front rotors at 25.8mm, under the 26.0mm minimum, scored from metal-on-metal contact. OK: tires at 8/32 tread wearing evenly; exhaust and suspension have no leaks or play. RECOMMENDED (maintenance): serpentine belt with 6 cracks per inch; engine air filter last replaced 32,000 miles ago (30,000-mile interval).",
+  sections:[
+    {name:"Introduction", req:"At the start of the video the advisor said ALL FOUR: (a) the customer's name (Mr. Smith), (b) their own name, (c) the shop name (Midas), (d) the vehicle year, make and model (2019 Honda CR-V)."},
+    {name:"Presentation", req:"ALL THREE: (a) Proper order - the concern (grinding brakes) first, then the REQUIRED items (calipers, pads, rotors), then the OK items (tires, exhaust, suspension), then the MAINTENANCE / recommended items (serpentine belt, air filter); all four groups covered in that order. (b) Show don't tell - for the concern and each required item the advisor pointed the customer to what is on camera (\"as you can see\", \"right here you can see\", \"I'm showing you\"). (c) Feature & benefit - for the concern and each required item the advisor said what the repair does AND how it helps the customer."},
+    {name:"Verbiage", req:"BOTH: (a) MAP guidelines - required items are called required / \"will require your immediate attention\", and maintenance items are called recommended or suggested; no item is put in the wrong category. (b) Measurements - the advisor stated the measurement for the brake pads (0mm / metal to metal vs 12mm new) AND the rotors (25.8mm vs 26.0mm minimum), and never described a part only with vague words like \"bad\", \"shot\" or \"junk\" without a measurement."},
+    {name:"Conclusion", req:"At the end the advisor did ALL THREE: (a) used the customer's name again, (b) recapped the recommendations (named the required items and the recommended items again), (c) thanked the customer."}
+  ],
+  // Cannot be judged from a transcript - shown on the debrief as a manager check.
+  manualSections:[
+    {name:"Visual Representation", req:"Steady picture, consistent show and tell, little to no background noise - checked by your manager on a real recorded DVI video."}
+  ],
   pb:function(){return pbPhase(3);}
 };
 
@@ -1104,23 +1171,33 @@ function rpCustomerReply(cfg,history){
   });
 }
 
-// Score a finished transcript. Resolves to a grade object or null.
+// Score a finished transcript against the scenario's pass/fail sections.
+// Resolves to a grade object or null (null = show a retry button).
+// The model only reports met / not met per section with evidence; pass/fail
+// is decided here in code. A section the model marks met without quoting the
+// advisor's words is treated as NOT met.
 function rpGrade(cfg,history,hungUpEarly){
+  var secs=cfg.sections||[];
   var lines=[];
   if(cfg.opener) lines.push("CUSTOMER: "+cfg.opener);
   history.forEach(function(m){lines.push((m.role==="user"?"ADVISOR: ":"CUSTOMER: ")+m.content);});
   if(hungUpEarly) lines.push("[The advisor ended the call here, before it was finished.]");
-  var sys="You grade role-play calls for Midas service advisors at Automotive Management Group. ADVISOR lines are the trainee being graded. CUSTOMER lines are an AI customer - never grade the customer. "
-    +"SCENARIO: "+cfg.intro+" "
-    +(cfg.brief?"WHAT THE ADVISOR KNEW BEFORE THE CALL: "+cfg.brief+" ":"")
-    +"GRADE ONLY AGAINST THIS RUBRIC: "+cfg.rubric+" "
-    +(cfg.outOfScope?"OUT OF SCOPE - never deduct for or mention: "+cfg.outOfScope+" ":"")
-    +"Judge what the advisor actually said. Natural wording that carries the meaning of the script counts - it does not need to be word for word. The advisor's lines come from speech-to-text, so ignore garbled words and missing punctuation. "
-    +"SCORING: score is an integer 0-10 for the whole call. 10 = every rubric item done well. 8 = meets the standard with only minor misses. 6-7 = noticeable gaps. 5 or below = several rubric items missed. Also give tone (tone and inflection), playbook (Playbook adherence) and customerFirst (customer-first language) as integers 0-10. "
-    +"Return ONLY a JSON object with no markdown, in this shape: {\"score\":8,\"tone\":8,\"playbook\":8,\"customerFirst\":8,\"criteria\":[{\"item\":\"short rubric item\",\"met\":true}],\"didWell\":[\"...\"],\"improve\":[\"...\"],\"ideal\":\"...\"}. "
-    +"criteria lists every rubric item in order. didWell has 1-3 specific things. improve has 1-3 specific fixes that stay inside this scenario and reference the Playbook. ideal is ONE short example (under 50 words) of what the advisor should have said at their weakest moment - never rewrite the whole call or video. Keep every string short and on one line. "
+  var list=secs.map(function(s,k){return (k+1)+". "+s.name+" - REQUIRED: "+s.req;}).join("\n");
+  var sys="You are a strict, literal checklist grader for Midas service advisor role-plays at Automotive Management Group. ADVISOR lines are the trainee being graded. CUSTOMER lines are an AI customer - never grade the customer and never give the advisor credit for something only the customer said.\n"
+    +"SCENARIO: "+cfg.intro+"\n"
+    +(cfg.brief?"WHAT THE ADVISOR KNEW BEFORE THE CALL: "+cfg.brief+"\n":"")
+    +"SECTIONS (grade every one, in this order):\n"+list+"\n"
+    +(cfg.outOfScope?"OUT OF SCOPE - never fail a section for: "+cfg.outOfScope+"\n":"")
+    +"RULES:\n"
+    +"- Each section is PASS or FAIL. There is no partial credit. A section is met ONLY if EVERY requirement listed for it is clearly present in the ADVISOR's own words. If any one required element is missing, only implied, out of the required order, or you are unsure, the section is NOT met.\n"
+    +"- Grade only what was said. Do not judge tone, style, friendliness or effort. Do not give benefit of the doubt.\n"
+    +"- Wording does not need to be word for word: a line passes if it says the same required thing in other words. The advisor's lines come from speech-to-text, so ignore misspellings, garbled words and missing punctuation.\n"
+    +"- These section requirements override the Playbook reference wherever the two differ.\n"
+    +"- For every met section, evidence is the exact advisor words (short quote) that satisfy it. For every section not met, evidence is empty and reason names exactly which required element was missing or wrong, in one plain sentence written to the advisor (for example: You never asked for the customer's phone number.).\n"
+    +"Return ONLY a JSON object, no markdown, in this exact shape: {\"sections\":[{\"name\":\"section name\",\"met\":false,\"evidence\":\"\",\"reason\":\"...\"}],\"improve\":[\"...\"],\"ideal\":\"...\"}. "
+    +"sections has exactly "+secs.length+" entries in the order above. improve has 1-3 specific fixes for the failed sections (empty if all met). ideal is ONE short example (under 50 words) of what the advisor should have said for the first failed section (empty if all met). Keep every string on one line.\n"
     +"PLAYBOOK REFERENCE: "+cfg.pb();
-  return api([{role:"user",content:"CALL TRANSCRIPT:\n"+lines.join("\n")+"\n\nGrade this call."}],sys,3500,"roleplay").then(function(reply){
+  return api([{role:"user",content:"TRANSCRIPT:\n"+lines.join("\n")+"\n\nGrade every section."}],sys,3500,"grade").then(function(reply){
     if(!reply) return null;
     try{
       var s=reply.indexOf("{"),e=reply.lastIndexOf("}");
@@ -1131,16 +1208,26 @@ function rpGrade(cfg,history,hungUpEarly){
         // Common model slips: raw line breaks inside strings, trailing commas
         g=JSON.parse(raw.replace(/[\u0000-\u001F]+/g," ").replace(/,\s*([}\]])/g,"$1"));
       }
-      var clamp=function(v){v=parseInt(v,10);return isNaN(v)?0:Math.max(0,Math.min(10,v));};
-      g.score=clamp(g.score);g.tone=clamp(g.tone);g.playbook=clamp(g.playbook);g.customerFirst=clamp(g.customerFirst);
-      g.criteria=Array.isArray(g.criteria)?g.criteria:[];
-      g.didWell=Array.isArray(g.didWell)?g.didWell:[];
-      g.improve=Array.isArray(g.improve)?g.improve:[];
-      g.pass=g.score>=PASS_SCORE;
-      return g;
+      var got=Array.isArray(g.sections)?g.sections:[];
+      if(got.length!==secs.length) throw new Error("expected "+secs.length+" sections, got "+got.length);
+      var out={sections:[],improve:Array.isArray(g.improve)?g.improve:[],ideal:g.ideal||""};
+      secs.forEach(function(sec,k){
+        var r=got[k]||{};
+        var ev=String(r.evidence||"").trim();
+        var met=r.met===true&&ev.length>0;
+        var reason=String(r.reason||"").trim();
+        if(!met&&!reason) reason=r.met===true?"No advisor words were found that meet this section.":"This section's requirements were not met.";
+        out.sections.push({name:sec.name,met:met,evidence:met?ev:"",reason:met?"":reason});
+      });
+      out.manual=cfg.manualSections||[];
+      out.total=out.sections.length;
+      out.passed=out.sections.filter(function(x){return x.met;}).length;
+      out.pass=out.total>0&&out.passed===out.total;
+      out.score=out.pass?10:Math.min(9,Math.floor(out.passed/out.total*10));
+      return out;
     }catch(err){
       if(!lastAIError) lastAIError="the AI's answer couldn't be read";
-      try{console.warn("Grader reply could not be parsed:",reply);}catch(e2){}
+      try{console.warn("Grader reply could not be parsed:",err.message,reply);}catch(e2){}
       return null;
     }
   });
@@ -1148,15 +1235,20 @@ function rpGrade(cfg,history,hungUpEarly){
 
 function rpFormatDebrief(g,isCert){
   var out=[];
-  out.push("SCORE: "+g.score+"/10 - "+(g.pass?"PASS":"FAIL")+" (need "+PASS_SCORE+")");
-  if(!isCert) out.push("Tone and Inflection "+g.tone+"/10 | Playbook Adherence "+g.playbook+"/10 | Customer-First Language "+g.customerFirst+"/10");
-  if(g.criteria.length){
-    out.push("");out.push("CHECKLIST");
-    g.criteria.forEach(function(c){out.push((c.met?"✓ ":"✗ ")+c.item);});
+  out.push("RESULT: "+(g.pass?"PASS":"FAIL")+" - "+g.passed+" of "+g.total+" sections passed");
+  out.push("Every section must pass. There is no partial credit.");
+  out.push("");
+  g.sections.forEach(function(s){
+    out.push((s.met?"✓ PASS  ":"✗ FAIL  ")+s.name);
+    if(s.met) out.push("     You said: \""+s.evidence.replace(/^"+|"+$/g,"")+"\"");
+    else out.push("     Why: "+s.reason);
+  });
+  if(g.manual&&g.manual.length){
+    out.push("");out.push("NOT GRADED HERE - MANAGER CHECK");
+    g.manual.forEach(function(m){out.push("•  "+m.name+": "+m.req);});
   }
-  if(g.didWell.length){out.push("");out.push("WHAT YOU DID WELL");g.didWell.forEach(function(x){out.push("- "+x);});}
-  if(g.improve.length){out.push("");out.push("WHAT TO IMPROVE");g.improve.forEach(function(x){out.push("- "+x);});}
-  if(g.ideal){out.push("");out.push("IDEAL RESPONSE");out.push(g.ideal);}
+  if(!g.pass&&g.improve.length){out.push("");out.push("WHAT TO FIX");g.improve.forEach(function(x){out.push("- "+x);});}
+  if(!g.pass&&g.ideal){out.push("");out.push("WHAT TO SAY INSTEAD");out.push(g.ideal);}
   return out.join("\n");
 }
 
@@ -1230,7 +1322,7 @@ function startDVIExercise(){
   // Context brief
   var brief=document.createElement("div");
   brief.style.cssText="background:rgba(201,168,76,.08);border:1px solid var(--gold-d);border-radius:10px;padding:18px;margin-bottom:16px;font-size:13px;line-height:1.7;color:var(--text)";
-  brief.textContent="DVI VIDEO OVERVIEW EXERCISE\n\nCustomer: Mr. Smith\nVehicle came in for: Grinding brakes\n\nTECHNICIAN FINDINGS:\n\nREQUIRED:\n- Brake calipers: seized, causing brake pad to apply to rotor consistently\n- Brake pads: worn to metal (caused the grinding noise)\n- Brake rotors: damaged from metal-on-metal contact\n\nRECOMMENDED:\n- Serpentine belt: cracking observed\n- Air filter: due by mileage\n\nYOUR JOB:\nFilm the DVI video overview as you would on the job. Address Mr. Smith directly. Follow the Playbook DVI video script - start with the customer concern, use measurements, show do not tell, present in correct order (concern first, required items, then recommended), and end with a clear recommendation.\n\nPress Start Recording when ready. Pause anytime. Press Complete when finished.";
+  brief.textContent="DVI VIDEO OVERVIEW EXERCISE\n\nCustomer: Mr. Smith\nVehicle: 2019 Honda CR-V\nCame in for: Grinding brakes\n\nTECHNICIAN FINDINGS:\n\nREQUIRED:\n- Front brake calipers: seized, keeping the pads pressed against the rotors\n- Front brake pads: worn to 0mm - metal on metal (new = 12mm). This is the grinding noise.\n- Front brake rotors: 25.8mm, under the 26.0mm minimum, scored from metal-on-metal contact\n\nOK (GREEN):\n- Tires: 8/32 tread, wearing evenly\n- Exhaust and suspension: no leaks or play\n\nRECOMMENDED (MAINTENANCE):\n- Serpentine belt: 6 cracks per inch\n- Engine air filter: last replaced 32,000 miles ago (30,000-mile interval)\n\nYOU ARE GRADED ON (each section is pass/fail - all must pass):\n1. Introduction - customer's name, your name, shop name, vehicle info\n2. Presentation - order (concern, required, OK, maintenance), show don't tell, feature & benefit\n3. Verbiage - MAP guidelines, measurements (2mm, not \"bad\")\n4. Conclusion - use their name again, recap recommendations, thank them\n5. Visual Representation - checked by your manager on a real video\n\nPress Start Recording when ready. Pause anytime. Press Complete when finished.";
   msgs.appendChild(brief);
 
   // Timer + controls
@@ -1378,7 +1470,7 @@ function rpFinishPractice(hungUpEarly){
     rpTranscript.push({speaker:"Debrief",text:text,time:new Date().toLocaleTimeString()});
     document.getElementById("rp-msgs").scrollTop=99999;
     if(document.getElementById("rp-call-mode").style.display!=="none"){
-      setCallStatus("&#9989; Call complete - "+g.score+"/10");
+      setCallStatus("&#9989; Call complete - "+(g.pass?"PASS":"FAIL")+" ("+g.passed+"/"+g.total+" sections)");
     }
   });
 }
@@ -1535,7 +1627,16 @@ function sendObj(){
   addMsg("obj-msgs","user",text);objH.push({role:"user",content:text});
   var lb=addMsg("obj-msgs","ai","...");
   document.getElementById("obj-btn").disabled=true;
-  var sys="You are M.A.I.C.E., a Midas Playbook coach evaluating how a service advisor handles a customer objection using the Sales Triangle (Identify, Isolate, Overcome). The objection is: "+objSc.t+" Evaluate the response. Score Empathy out of 10, Sales Triangle Adherence out of 10, Effectiveness out of 10. Show the ideal response. Then continue roleplay as the customer. Keep coaching concise. Playbook: "+PB;
+  var sys="You are M.A.I.C.E., a Midas Playbook coach running an Overcoming Objections drill. The customer's objection is: "+objSc.t+" "
+    +"The advisor must complete these 5 steps in order, each pass/fail with no partial credit: "
+    +"1) IDENTIFY - asks what is holding them back (\"What's holding you back?\"). "
+    +"2) ISOLATE - asks if that is the only thing holding them back (\"Is that the only thing holding you back?\"). "
+    +"3) EMPATHIZE - says they understand how the customer feels (\"I totally understand, I know how I would feel in that situation\"). "
+    +"4) OVERCOME - presents a specific solution framed as what other customers do (\"What most of my customers are doing now is...\" - financing, a ride or Uber, the value of the vehicle, etc.). "
+    +"5) RECLOSE - asks an either/or closing question where either answer means doing business (\"Now that we have this taken care of, were you going to need that ride home, or will you be waiting here?\"). "
+    +"After EVERY advisor message reply in exactly this format: a line STEPS: followed by the 5 steps, each marked ✓ (clearly said by the advisor at some point so far, in the right order) or ✗ (not said yet, or only implied). Be strict and literal - do not judge tone and give no scores or points. "
+    +"Then a line NEXT: naming the next missing step and one short example line for it (or, when all 5 are ✓, say the objection is overcome). "
+    +"Then a line CUSTOMER: with one or two short sentences of the customer's reply - answer honestly when asked what is holding you back or whether that is the only thing, and agree to the work only after all 5 steps are done. Playbook: "+PB;
   api(objH,sys,600,"roleplay").then(function(reply){
     document.getElementById("obj-btn").disabled=false;
     if(reply){objH.push({role:"assistant",content:reply});lb.textContent=reply;}
@@ -1783,7 +1884,7 @@ function checkCD(){
       +"<div style='font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-bottom:8px'>Role-Play Score</div>"
       +"<div style='font-size:28px;font-weight:700;color:"+rpColor+";margin-bottom:4px'>"+cRPS+"/10</div>"
       +"<div style='font-size:12px;color:"+rpColor+";font-weight:700'>"+(rpPass?"PASS":"FAIL")+"</div>"
-      +"<div style='font-size:11px;color:var(--muted);margin-top:4px'>Need 8/10 to pass</div></div>";
+      +"<div style='font-size:11px;color:var(--muted);margin-top:4px'>Every section must pass (10/10)</div></div>";
   }
   var scoreRow="<div style='display:flex;gap:12px;margin-bottom:16px'>"+mcCard+rpCard+"</div>";
   if(bothPass){
@@ -2818,7 +2919,7 @@ function processCertVoiceInput(text){
       rpGradeInto(sb, cfg, cRPH.slice(), true, false, function(g, debrief) {
         certTranscript.push({ speaker: "Debrief", text: debrief, time: new Date().toLocaleTimeString() });
         if (cPh !== phaseAtCall) return; // advisor moved to another phase
-        setCertCallStatus("&#9989; Call complete - " + g.score + "/10");
+        setCertCallStatus("&#9989; Call complete - " + (g.pass?"PASS":"FAIL") + " (" + g.passed + "/" + g.total + " sections)");
         cRPS = g.score; cRPD = true; checkCD();
       });
       return;
@@ -2876,7 +2977,7 @@ function loadCertDVIExercise(sec){
 
   var brief=document.createElement("div");
   brief.style.cssText="background:rgba(201,168,76,.08);border:1px solid var(--gold-d);border-radius:10px;padding:18px;margin-bottom:16px;font-size:13px;line-height:1.7;white-space:pre-wrap;color:var(--text)";
-  brief.textContent="DVI VIDEO OVERVIEW EXERCISE\n\nCustomer: Mr. Smith\nVehicle came in for: Grinding brakes\n\nTECHNICIAN FINDINGS:\n\nREQUIRED:\n- Brake calipers: seized, causing brake pad to apply to rotor consistently\n- Brake pads: worn to metal (caused the grinding noise)\n- Brake rotors: damaged from metal-on-metal contact\n\nRECOMMENDED:\n- Serpentine belt: cracking observed\n- Air filter: due by mileage\n\nYOUR JOB:\nFilm the DVI video overview as you would on the job. Address Mr. Smith directly. Follow the Playbook DVI video script - start with the customer concern, use measurements, show do not tell, present in correct order (concern first, required items, then recommended), and end with a clear recommendation.\n\nPress Start Recording when ready. Your narration will appear as you speak. Press Pause to pause, and Complete when finished.";
+  brief.textContent="DVI VIDEO OVERVIEW EXERCISE\n\nCustomer: Mr. Smith\nVehicle: 2019 Honda CR-V\nCame in for: Grinding brakes\n\nTECHNICIAN FINDINGS:\n\nREQUIRED:\n- Front brake calipers: seized, keeping the pads pressed against the rotors\n- Front brake pads: worn to 0mm - metal on metal (new = 12mm). This is the grinding noise.\n- Front brake rotors: 25.8mm, under the 26.0mm minimum, scored from metal-on-metal contact\n\nOK (GREEN):\n- Tires: 8/32 tread, wearing evenly\n- Exhaust and suspension: no leaks or play\n\nRECOMMENDED (MAINTENANCE):\n- Serpentine belt: 6 cracks per inch\n- Engine air filter: last replaced 32,000 miles ago (30,000-mile interval)\n\nYOU ARE GRADED ON (each section is pass/fail - all must pass):\n1. Introduction - customer's name, your name, shop name, vehicle info\n2. Presentation - order (concern, required, OK, maintenance), show don't tell, feature & benefit\n3. Verbiage - MAP guidelines, measurements (2mm, not \"bad\")\n4. Conclusion - use their name again, recap recommendations, thank them\n5. Visual Representation - checked by your manager on a real video\n\nPress Start Recording when ready. Pause anytime. Press Complete when finished.";
 
   // Controls bar
   var controls=document.createElement("div");
