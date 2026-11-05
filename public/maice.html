@@ -251,6 +251,7 @@ textarea.ti:focus{border-color:var(--gold-d)}
     <button class="nb" data-p="proc"><span class="ni">&#9881;</span> Process Training</button>
     <button class="nb" data-p="pk"><span class="ni">&#128214;</span> Playbook Reference</button>
     <button class="nb" data-p="obj"><span class="ni">&#128737;</span> Objections</button>
+    <button class="nb" id="nav-playbook-file" onclick="openPlaybookFile()"><span class="ni">&#128216;</span> Open Full Playbook &#8599;</button>
     <div class="nl">Certification</div>
     <button class="nb" data-p="cert"><span class="ni">&#127942;</span> Get Certified</button>
     <button class="nb" data-p="qbank"><span class="ni">&#9998;</span> Question Bank</button>
@@ -353,6 +354,15 @@ textarea.ti:focus{border-color:var(--gold-d)}
 
     <div class="panel" id="panel-pk">
       <div class="sh"><h2>&#128214; Playbook Reference</h2><p>Ask anything or browse the full Playbook by phase.</p></div>
+
+      <div id="pbf-banner" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--dark2);border:1px solid var(--gold-d);border-radius:10px;padding:14px 18px;margin-bottom:20px">
+        <div style="font-size:26px">&#128216;</div>
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:14px;font-weight:700;color:var(--text)">The Playbook &#8212; full document</div>
+          <div id="pbf-banner-meta" style="font-size:12px;color:var(--muted);margin-top:2px">Loading&#8230;</div>
+        </div>
+        <button class="gbtn" onclick="openPlaybookFile()">Open the Playbook &#8599;</button>
+      </div>
 
       <div style="display:flex;gap:0;margin-bottom:20px;border:1px solid var(--border);border-radius:8px;overflow:hidden;width:fit-content">
         <button id="pk-tab-ask" onclick="pkSwitchTab('ask')" style="background:var(--gold);color:var(--black);border:none;padding:9px 22px;font-size:13px;font-weight:700;cursor:pointer">&#128172; Ask AI</button>
@@ -488,6 +498,21 @@ textarea.ti:focus{border-color:var(--gold-d)}
       <button class="gbtn" onclick="mgrExportCSV()">&#8681; Export to CSV</button>
       <button class="gbtn" onclick="mgrRefresh()" style="background:var(--dark3);border:1px solid var(--border);color:var(--muted)">&#8635; Refresh</button>
       <button class="gbtn" onclick="mgrClearAll()" style="background:var(--dark3);border:1px solid var(--red);color:var(--red)">&#10005; Clear All Data</button>
+    </div>
+
+    <!-- PLAYBOOK FILE LINK -->
+    <div style="background:var(--dark2);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:20px">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+        <div style="font-size:14px;font-weight:700;color:var(--text)">&#128216; Playbook File</div>
+        <div id="pbf-mgr-status" style="font-size:11px;color:var(--dim)"></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Paste the SharePoint/OneDrive share link. To publish a new version, replace the file in SharePoint (same link) and just update the version label here.</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <input id="pbf-mgr-url" type="url" placeholder="https://midasamg.sharepoint.com/..." style="flex:3;min-width:240px;background:var(--dark3);border:1px solid var(--border);color:var(--text);padding:9px 12px;font-size:12px;border-radius:6px">
+        <input id="pbf-mgr-ver" type="text" maxlength="40" placeholder="Version (e.g. 1.1)" style="flex:1;min-width:120px;background:var(--dark3);border:1px solid var(--border);color:var(--text);padding:9px 12px;font-size:12px;border-radius:6px">
+        <button class="gbtn" onclick="pbfSave()" style="padding:9px 18px">Save</button>
+        <button class="gbtn" onclick="pbfTest()" style="padding:9px 18px;background:var(--dark3);border:1px solid var(--border);color:var(--muted)">Test link &#8599;</button>
+      </div>
     </div>
 
     <!-- FILTER BAR -->
@@ -708,7 +733,7 @@ function qbGetRandom10(phaseIdx){
 }
 
 window.addEventListener("DOMContentLoaded",function(){
-  document.querySelectorAll(".nb").forEach(function(b){b.addEventListener("click",function(){go(b.dataset.p);});});
+  document.querySelectorAll(".nb[data-p]").forEach(function(b){b.addEventListener("click",function(){go(b.dataset.p);});});
   document.querySelectorAll("#qpills .pill").forEach(function(p){p.addEventListener("click",function(){
     document.querySelectorAll("#qpills .pill").forEach(function(x){x.classList.remove("on");});
     p.classList.add("on");qPh=p.dataset.ph;updateQUI();
@@ -873,7 +898,7 @@ function go(p){
   document.getElementById("tbg").textContent=TAGS[p]||"";
   if(p==="cert"){buildCertGrid();}
   if(p==="qbank"){qbRefresh();}
-  if(p==="mgr"){mgrRefresh();}
+  if(p==="mgr"){mgrRefresh();pbfLoad();}
 }
 
 // All AI calls go through the server (/api/claude) so no API key ever
@@ -3338,6 +3363,66 @@ function qbExport(){
   toast("Question bank exported!");
 }
 
+
+// ── PLAYBOOK FILE LINK ────────────────────────────────────
+// The full Playbook deck lives in SharePoint. MAICE only stores the share
+// link + a version label (server: /api/playbook), so updating the Playbook
+// never needs a code change or redeploy.
+var PBF = {url:"", version:"", updatedAt:null};
+var pbfMgrPw = "";
+function pbfFmtDate(d){
+  if(!d) return "";
+  try{return new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});}catch(e){return "";}
+}
+function pbfRender(){
+  var meta = document.getElementById("pbf-banner-meta");
+  if(meta){
+    if(PBF.url){
+      var bits=[];
+      if(PBF.version) bits.push("Version "+PBF.version);
+      if(PBF.updatedAt) bits.push("Updated "+pbfFmtDate(PBF.updatedAt));
+      meta.textContent = (bits.length?bits.join(" \u00b7 ")+" \u00b7 ":"")+"Opens in a new tab";
+    } else {
+      meta.textContent = "Not linked yet \u2014 a manager can add it from the Manager Dashboard.";
+    }
+  }
+  var st = document.getElementById("pbf-mgr-status");
+  if(st) st.textContent = PBF.url ? ("Live: v"+(PBF.version||"?")+" \u00b7 saved "+pbfFmtDate(PBF.updatedAt)) : "No link saved yet";
+  var u = document.getElementById("pbf-mgr-url"), v = document.getElementById("pbf-mgr-ver");
+  if(u && document.activeElement!==u) u.value = PBF.url||"";
+  if(v && document.activeElement!==v) v.value = PBF.version||"";
+}
+function pbfLoad(){
+  fetch("/api/playbook").then(function(r){return r.json();}).then(function(d){
+    if(d && d.ok){PBF.url=d.url||"";PBF.version=d.version||"";PBF.updatedAt=d.updatedAt||null;}
+    pbfRender();
+  }).catch(function(){pbfRender();});
+}
+function openPlaybookFile(){
+  if(!PBF.url){toast("The Playbook link hasn't been added yet. Ask your manager.");return;}
+  window.open(PBF.url,"_blank","noopener");
+}
+function pbfTest(){
+  var url=(document.getElementById("pbf-mgr-url").value||"").trim();
+  if(!/^https:\/\//i.test(url)){toast("Enter a link that starts with https://");return;}
+  window.open(url,"_blank","noopener");
+}
+function pbfSave(){
+  var url=(document.getElementById("pbf-mgr-url").value||"").trim();
+  var ver=(document.getElementById("pbf-mgr-ver").value||"").trim();
+  if(!/^https:\/\//i.test(url)){toast("Enter a link that starts with https://");return;}
+  if(!pbfMgrPw){
+    var pw=prompt("Re-enter the Manager password to save the Playbook link:");
+    if(pw===null)return;
+    pbfMgrPw=pw;
+  }
+  fetch("/api/playbook",{method:"PUT",headers:{"Content-Type":"application/json","x-manager-password":pbfMgrPw},body:JSON.stringify({url:url,version:ver})})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d && d.ok){PBF.url=d.url;PBF.version=d.version;PBF.updatedAt=d.updatedAt;pbfRender();toast("Playbook link saved. Everyone will see it now.");}
+      else{if(d&&d.error==="unauthorized")pbfMgrPw="";toast("Couldn't save: "+((d&&d.error)||"unknown error"));}
+    }).catch(function(e){toast("Couldn't save: "+e.message);});
+}
+pbfLoad();
 
 function toast(msg){var t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");setTimeout(function(){t.classList.remove("show");},3000);}
 </script>
