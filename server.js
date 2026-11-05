@@ -46,6 +46,13 @@ async function initDB() {
     await pool.query(`
       ALTER TABLE cert_scores ADD COLUMN IF NOT EXISTS certified_at TIMESTAMP;
     `).catch(() => {});
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
     console.log('Database initialized');
   } catch (err) {
     console.error('DB init error:', err.message);
@@ -244,6 +251,42 @@ app.get('/api/users', async (req, res) => {
     res.json(result);
   } catch (err) {
     res.json([]);
+  }
+});
+
+// ===== PLAYBOOK FILE LINK ===============================================
+// The full Playbook deck is hosted in SharePoint; MAICE stores only the
+// share link and a version label. Replacing the file in SharePoint keeps the
+// same link, so an update is just a new version label here.
+app.get('/api/playbook', async (req, res) => {
+  try {
+    const r = await pool.query("SELECT value, updated_at FROM app_settings WHERE key = 'playbook'");
+    if (r.rows.length === 0) return res.json({ ok: true, url: '', version: '', updatedAt: null });
+    const v = r.rows[0].value || {};
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, url: v.url || '', version: v.version || '', updatedAt: r.rows[0].updated_at });
+  } catch (err) {
+    console.error('Playbook get error:', err.message);
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+app.put('/api/playbook', async (req, res) => {
+  try {
+    const expected = process.env.MANAGER_PASSWORD || 'AMG';
+    if (req.get('x-manager-password') !== expected) return res.status(401).json({ ok: false, error: 'unauthorized' });
+    const url = String((req.body && req.body.url) || '').trim();
+    const version = String((req.body && req.body.version) || '').trim().slice(0, 40);
+    if (!/^https:\/\/\S+$/i.test(url) || url.length > 2000) return res.status(400).json({ ok: false, error: 'Link must start with https://' });
+    const r = await pool.query(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES ('playbook', $1, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()
+      RETURNING updated_at
+    `, [JSON.stringify({ url, version })]);
+    res.json({ ok: true, url, version, updatedAt: r.rows[0].updated_at });
+  } catch (err) {
+    console.error('Playbook save error:', err.message);
+    res.json({ ok: false, error: err.message });
   }
 });
 
